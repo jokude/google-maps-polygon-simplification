@@ -1,0 +1,73 @@
+.common-button {
+  font-family: inherit;
+  cursor: pointer;
+  padding: 0;
+
+  &:disabled {
+    cursor: default;
+  }
+}
+
+.overlay-toolbar {
+  height: 65px;
+  display: flex;
+  position: absolute;
+  right: 0;
+  align-items: center;
+  margin: 0 10px;
+  justify-content: flex-end;
+  z-index: 10;
+
+  .overlay-toolbar-button {
+    background-color: #e1e1e1;
+    font-weight: bold;
+    box-shadow: 0 0 6px 0 rgba(0, 0, 0, 0.25);
+    padding: 12px;
+
+    &:hover {
+      background-color: #ffffff;
+    }
+  }
+}
+
+.fixed-toolbar {
+  height: 65px;
+  width: 100%;
+  background-color: rgba(0, 0, 0, 0.75);
+  z-index: 11;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: absolute;
+
+  .fixed-toolbar-button-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 12px;
+  }
+
+  .fixed-toolbar-button {
+    padding: 16px;
+    color: #ffffff;
+    font-weight: bold;
+    background-color: #42a5f5;
+
+    &:hover {
+      background-color: #78bbf1;
+    }
+    
+    &:disabled {
+      background-color: #8f8f8f;
+    }
+
+    ~ .fixed-toolbar-button {
+      margin-left: 16px;
+    }
+  }
+}
+
+p {
+  color: #ffffff;
+  font-size: 14px;
+}
