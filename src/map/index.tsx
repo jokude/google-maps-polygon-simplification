@@ -1,15 +1,31 @@
 import type { Points } from "../utils/types";
 
-import React, { useEffect, useReducer, useRef } from "react";
-import { simplify } from "../utils/simplify";
-import { Toolbar } from "./toolbar";
+import React, {
+  ChangeEventHandler,
+  useEffect,
+  useReducer,
+  useRef,
+} from "react";
+import { simplify } from "../utils/douglas-peucker";
+// import { simplify } from "../utils/visvalingam";
+import { DrawToolbar } from "./toolbar/draw-toolbar";
+import { OverlayToolbar } from "./toolbar/overlay-toolbar";
+import { ConfigToolbar } from "./toolbar/config-toolbar";
 import "./map.css";
+
+const initialCoordinateDecimals = 6;
+const initialZoomLevel = 21;
+const initialMapCenter = { lat: -33.438236, lng: -70.61582 };
+const initialRDPTolerance = 0.00008;
 
 interface MapState {
   library: google.maps.MapsLibrary | null;
   map: google.maps.Map | null;
   drawable: boolean;
   hasPolygon: boolean;
+  coordinateDecimals: number;
+  RDPTolerance: number;
+  coordinates: google.maps.LatLng[] | null;
 }
 
 const reducer = (state: MapState, action: Partial<MapState>) => ({
@@ -29,29 +45,47 @@ const initLibrary = async (
 
 const initMap = ({ Map }: google.maps.MapsLibrary): google.maps.Map => {
   return new Map(document.getElementById("map") as HTMLElement, {
-    center: { lat: -33.438236, lng: -70.61582 },
-    zoom: 12,
+    center: initialMapCenter,
+    zoom: initialZoomLevel,
     fullscreenControl: false,
   });
 };
 
+const toFixedDecimals = (num: number, fixed: number): number => {
+  const re = new RegExp("^-?\\d+(?:.\\d{0," + (fixed || -1) + "})?");
+  return parseFloat(num.toString().match(re)![0]);
+};
+
 export const Map = () => {
-  const [{ library, map, drawable, hasPolygon }, dispatch] = useReducer(
-    reducer,
+  const [
     {
-      drawable: false,
-      map: null,
-      library: null,
-      hasPolygon: false,
-    }
-  );
+      library,
+      map,
+      drawable,
+      hasPolygon,
+      coordinateDecimals,
+      RDPTolerance,
+      coordinates,
+    },
+    dispatch,
+  ] = useReducer(reducer, {
+    drawable: false,
+    map: null,
+    library: null,
+    hasPolygon: false,
+    coordinateDecimals: initialCoordinateDecimals,
+    RDPTolerance: initialRDPTolerance,
+    coordinates: null,
+  });
 
   const ref = useRef<{
     polygon: google.maps.Polygon | null;
     simplified: google.maps.Polygon | null;
+    reducedPrecision: google.maps.Polygon | null;
   }>({
     polygon: null,
     simplified: null,
+    reducedPrecision: null,
   });
 
   useEffect(() => {
@@ -74,6 +108,12 @@ export const Map = () => {
     toggleInteractions(!drawable);
   }, [drawable]);
 
+  useEffect(() => {
+    if (hasPolygon) {
+      renderSimplifiedPolygon();
+    }
+  }, [hasPolygon, RDPTolerance, coordinateDecimals]);
+
   const toggleInteractions = (enable: boolean): void => {
     map?.setOptions({
       draggable: enable,
@@ -87,10 +127,15 @@ export const Map = () => {
     }
   };
 
-  const clearPolygon = () => {
+  const clearAllPolygons = () => {
     ref.current.polygon?.setMap(null);
-    ref.current.simplified?.setMap(null);
+    clearSimplifiedPolygons();
     dispatch({ hasPolygon: false });
+  };
+
+  const clearSimplifiedPolygons = () => {
+    ref.current.simplified?.setMap(null);
+    ref.current.reducedPrecision?.setMap(null);
   };
 
   const enableDrawableHelper = () => {
@@ -100,11 +145,22 @@ export const Map = () => {
     }
   };
 
-  const getTolerance = (zoom: number) => {
-    const baseTolerance = 1e-12;
-    const circumference = 40075017 / 10;
-    const maxZoomLevel = 22;
-    return baseTolerance * circumference * 2 ** (maxZoomLevel - zoom);
+  const getTolerance = (
+    totalPoints: number,
+    maxPoints: number,
+    zoom: number
+  ): number => {
+    // more points results in a smaller tolerance factor
+    const factor = Math.exp(0.01 * (totalPoints / maxPoints - 1));
+
+    // google map resolution in meters based on zoom level
+    const baseResolution = (156543.0339 * Math.cos(0)) / Math.pow(2, zoom);
+
+    // smaller tolerance means more points
+    const tolerance = RDPTolerance * baseResolution * factor;
+
+    // console.log(zoom, baseResolution, tolerance);
+    return tolerance;
   };
 
   const simplifyPath = ({
@@ -130,7 +186,8 @@ export const Map = () => {
     });
 
     const simp = simplify(bounds, tolerance, false);
-    console.log(bounds.length, simp.length);
+    // const simp = simplify(bounds.map(b => ([b.x, b.y])), 30).map(b => ({ x: b[0], y: b[1] }));
+
     return simp;
   };
 
@@ -157,8 +214,54 @@ export const Map = () => {
     });
   };
 
+  const renderSimplifiedPolygon = () => {
+    clearSimplifiedPolygons();
+
+    const polygon: google.maps.Polygon | null = ref.current.polygon;
+
+    if (map && polygon) {
+      const simplified: Points = simplifyPath({
+        polygon,
+        tolerance: getTolerance(
+          polygon.getPaths().getLength(),
+          30,
+          map.getZoom()!
+        ),
+      });
+
+      const simplifiedPath = simplified.map(
+        ({ x, y }) => new google.maps.LatLng(y, x)
+      );
+
+      const reducedPrecisionPath = simplified.map(
+        ({ x, y }) =>
+          new google.maps.LatLng(
+            toFixedDecimals(y, coordinateDecimals),
+            toFixedDecimals(x, coordinateDecimals)
+          )
+      );
+
+      const simplifiedPolygon = createPolygon({
+        map,
+        paths: simplifiedPath,
+        color: "#ff5733",
+      });
+
+      const reducedPrecisionPolygon = createPolygon({
+        map,
+        paths: reducedPrecisionPath,
+        color: "#f7dc6f",
+      });
+
+      ref.current.simplified = simplifiedPolygon;
+      ref.current.reducedPrecision = reducedPrecisionPolygon;
+
+      dispatch({ hasPolygon: true, coordinates: reducedPrecisionPath });
+    }
+  };
+
   const drawFreeHand = async () => {
-    clearPolygon();
+    clearAllPolygons();
 
     const { Polyline } = library!;
 
@@ -166,7 +269,7 @@ export const Map = () => {
       clickable: false,
       map,
       strokeColor: "#42A5F5",
-      strokeWeight: 3,
+      strokeWeight: 2,
     });
 
     if (map) {
@@ -187,23 +290,7 @@ export const Map = () => {
           color: "#42A5F5",
         });
 
-        const simplified: Points = simplifyPath({
-          polygon,
-          tolerance: getTolerance(map.getZoom()!),
-        });
-
-        const simplifiedPath = simplified.map(
-          ({ x, y }) => new google.maps.LatLng(y, x)
-        );
-
-        const simplifiedPolygon = createPolygon({
-          map,
-          paths: simplifiedPath,
-          color: "#ff5733",
-        });
-
         ref.current.polygon = polygon;
-        ref.current.simplified = simplifiedPolygon;
 
         dispatch({ hasPolygon: true });
       });
@@ -225,25 +312,48 @@ export const Map = () => {
   };
 
   const handleClearMap = () => {
-    clearPolygon();
+    clearAllPolygons();
     disableDrawing();
   };
 
   const handleCancelDrawable = () => {
     dispatch({ drawable: false });
-    clearPolygon();
+    clearAllPolygons();
+  };
+
+  const handleDecimalsChange: ChangeEventHandler<HTMLInputElement> = (e) => {
+    dispatch({ coordinateDecimals: parseInt(e.target.value, 10) });
+  };
+
+  const handleRDPToleranceChange: ChangeEventHandler<HTMLInputElement> = (
+    e
+  ) => {
+    dispatch({ RDPTolerance: parseFloat(e.target.value) });
   };
 
   return (
     <>
-      {map && (
-        <Toolbar
+      {drawable ? (
+        <div className="fixed-toolbar no-mobile">
+          <DrawToolbar
+            hasPolygon={hasPolygon}
+            handleCancelDrawable={handleCancelDrawable}
+            applyPolygon={applyPolygon}
+          />
+          <ConfigToolbar
+            coordinateDecimals={coordinateDecimals}
+            onDecimalsChange={handleDecimalsChange}
+            RDPTolerance={RDPTolerance}
+            onRDPToleranceChange={handleRDPToleranceChange}
+            coordinates={coordinates}
+          />
+        </div>
+      ) : (
+        <OverlayToolbar
           drawable={drawable}
           hasPolygon={hasPolygon}
           handleClearMap={handleClearMap}
           handleDrawable={handleDrawable}
-          handleCancelDrawable={handleCancelDrawable}
-          applyPolygon={applyPolygon}
         />
       )}
       <div id="map" />
